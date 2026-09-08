@@ -45,9 +45,31 @@ python3 -m venv .venv && ./.venv/bin/pip install -e .
    `~/.flow-mcp-profile` içinde kalıcı olur.
 
 2. `flow.google.com` üzerinde bir proje aç. Sunucu o an açık olan projeye
-   üretim yapar.
+   üretim yapar. Ana sayfa sekmesi de açıksa sorun değil; sunucu proje
+   sekmesini tercih eder.
 
 3. Ajanını bağla (aşağıya bak).
+
+### Oturum açılışında otomatik başlatma
+
+Her seferinde komut çalıştırmamak için:
+
+```bash
+./scripts/install-launchd.sh
+```
+
+Bir LaunchAgent kurar; Chrome oturum açılışında debug portuyla ve Flow
+açık şekilde başlar. Loglar `~/Library/Logs/flow-mcp/` altındadır.
+
+`KeepAlive` bilerek kapalı: bu Chrome'u kapattığında bilerek kapatmışsındır,
+launchd onu geri getirmemeli. Her koşulda ayakta kalmasını istersen plist'e
+`KeepAlive` ekle.
+
+Kaldırmak için:
+
+```bash
+launchctl bootout gui/$UID/com.flow-mcp.chrome && rm ~/Library/LaunchAgents/com.flow-mcp.chrome.plist
+```
 
 ## Ajanlar bunu nasıl kullanır
 

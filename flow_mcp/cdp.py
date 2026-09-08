@@ -19,11 +19,19 @@ def _http_json(port, path):
 
 
 def find_page(port=DEFAULT_PORT, url_contains="flow.google.com"):
-    """Return the debug target for the first matching page tab."""
+    """Return the debug target for the Flow tab to drive.
+
+    A tab sitting on a project is preferred over one on the Flow home
+    page: everything here acts on the open project, and the launch agent
+    opens the home page, so both can be present at once.
+    """
     pages = [t for t in _http_json(port, "/list") if t.get("type") == "page"]
-    for t in pages:
-        if url_contains in t.get("url", ""):
+    matches = [t for t in pages if url_contains in t.get("url", "")]
+    for t in matches:
+        if "/project/" in t.get("url", ""):
             return t
+    if matches:
+        return matches[0]
     if not pages:
         raise RuntimeError(
             f"Chrome'da acik sekme yok. Debug portu {port} dogru mu?"
