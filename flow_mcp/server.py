@@ -22,7 +22,35 @@ DOWNLOAD_DIR = pathlib.Path(
     os.environ.get("FLOW_DOWNLOAD_DIR", pathlib.Path.home() / "Downloads" / "flow")
 )
 
-mcp = MCPServer("flow")
+INSTRUCTIONS = """\
+Google Flow'da video ve gorsel uretir. Kullanicinin kendi tarayicisina
+bagli calisir; uretim onun Google AI Pro kotasindan harcanir.
+
+Cogu istek icin tek arac yeter: flow_create(prompt, kind="image"|"video").
+Modu ayarlar, uretir, bitmesini bekler ve dosyayi diske indirir.
+
+Daha fazla denetim gerekiyorsa adimlar ayri ayri da cagirilabilir:
+flow_settings -> flow_model -> (flow_frame | flow_ingredient) ->
+flow_generate -> flow_status -> flow_download.
+
+Bilinmesi gerekenler:
+
+- Uretim, tarayicida ACIK OLAN Flow projesine yapilir. flow_project ile
+  hangi projede oldugunu dogrula. Sekme Flow'da degilse hicbir sey
+  calismaz; kullanicidan projeyi acmasini iste.
+- Gorsel uretimi (Nano Banana) kredi harcamaz, video harcar. Kullanici
+  aksini soylemedikce en ucuz ayari sec: kisa sure, x1, dusuk cozunurluk.
+  4K upscale kredi harcar ve ayrica onay ister.
+- Video uretimi dakikalar surer. flow_generate beklemez; sonucu
+  flow_status ile yokla.
+- Daha iyi bir prompt icin flow_prompt_guide ile Google'in kendi
+  rehberine bakabilirsin. Rehber otomatik uygulanmaz: okursun, prompt'u
+  kendin yazarsin. Yanittaki tarih eskiyse tavsiyeye guvenme.
+- Frames iki uc kareyi belirler, Ingredients ise prompt'a tasinan
+  referans gorsellerdir. Ikisi de video moduna ozgudur.
+"""
+
+mcp = MCPServer("flow", instructions=INSTRUCTIONS)
 
 
 async def _media_in_page(cdp):
@@ -85,6 +113,77 @@ async def flow_generate(prompt: str) -> dict:
         return {"project_id": p.project_id, "media_ids": ids,
                 "state": "pending",
                 "hint": "flow_status ile durumu sorgula"}
+
+
+@mcp.tool()
+async def flow_create(prompt: str, kind: str = "image", model: str = "",
+                      aspect: str = "", duration: str = "", resolution: str = "",
+                      count: str = "", ingredients: list[str] | None = None,
+                      start_frame: str = "", end_frame: str = "",
+                      wait: int = 420, download: bool = True) -> dict:
+    """Generate in Flow in one call: configure, generate, wait, download.
+
+    This is the tool to reach for by default. `kind` is "image" or
+    "video"; the rest are optional and take the labels Flow's own panel
+    shows ("16:9", "720p", "8s", "x2"). Images cost no credits, video
+    does, so leave the video options alone unless the user asked for
+    something specific.
+
+    Returns the local file path when the render finished, and the media
+    ids to poll with flow_status if it was still going when `wait` ran
+    out.
+    """
+    kind = kind.strip().lower()
+    if kind not in ("image", "video"):
+        return {"error": "kind 'image' ya da 'video' olmali"}
+
+    mode = ["Image"] if kind == "image" else ["Video"]
+    if start_frame or end_frame:
+        mode.append("Frames")
+    elif ingredients:
+        mode.append("Ingredients")
+    wanted = mode + [v for v in (aspect, resolution, duration, count) if v]
+
+    steps = {}
+    async with _Page() as p:
+        if not p.project_id:
+            return {"error": "Tarayicida acik bir Flow projesi yok"}
+        try:
+            steps["settings"] = await flow.apply_settings(p.cdp, wanted)
+            if model:
+                steps["model"] = await flow.set_model(p.cdp, model)
+            if start_frame:
+                steps["start"] = await flow.set_frame(p.cdp, "Start", start_frame)
+            if end_frame:
+                steps["end"] = await flow.set_frame(p.cdp, "End", end_frame)
+            if ingredients:
+                steps["ingredients"] = await flow.add_ingredients(p.cdp, ingredients)
+            media_ids = await flow.start_generation(p.cdp, prompt)
+        except RuntimeError as e:
+            return {"error": str(e), "steps": steps}
+
+    result = {"project_id": p.project_id, "media_ids": media_ids, "steps": steps}
+
+    deadline = asyncio.get_running_loop().time() + max(wait, 0)
+    done = []
+    for mid in media_ids:
+        while asyncio.get_running_loop().time() < deadline:
+            st = await flow_status(mid)
+            if st["state"] != "pending":
+                done.append(st)
+                break
+            await asyncio.sleep(8)
+        else:
+            result["state"] = "pending"
+            result["hint"] = "Sure doldu, flow_status ile yoklamaya devam et"
+            return result
+
+    result["state"] = "done"
+    if download:
+        result["files"] = [await flow_download(st["media_id"]) for st in done]
+    else:
+        result["urls"] = [{"media_id": st["media_id"], "url": st["url"]} for st in done]
+    return result
 
 
 @mcp.tool()

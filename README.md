@@ -49,10 +49,29 @@ python3 -m venv .venv && ./.venv/bin/pip install -e .
 
 3. Ajanını bağla (aşağıya bak).
 
+## Ajanlar bunu nasıl kullanır
+
+Sunucu, MCP protokolünün `instructions` alanıyla kendini tanıtır: bağlanan
+her istemci (Claude Code, Cursor, Codex) iş akışını, kredi uyarısını ve
+"üretim açık olan projeye yapılır" kuralını otomatik görür. Ayrıca ajan
+tarafında yapılandırma gerekmez.
+
+Çoğu istek için tek araç yeter:
+
+```
+flow_create("mor bir dağ silüeti", kind="image")
+flow_create("sisli orman", kind="video", duration="8s", aspect="9:16")
+```
+
+Claude Code için ayrıca `~/.claude/skills/flow/` altında bir skill var;
+o, tarayıcı kurulumunu (debug portlu Chrome, Flow'da açık proje)
+sorun çıktığında adım adım çözer.
+
 ## Araçlar
 
 | Araç | Açıklama |
 |---|---|
+| **`flow_create(prompt, kind)`** | **Tek çağrıda: ayarla, üret, bekle, indir** |
 | `flow_project` | Açık sekmedeki projenin kimliği ve adı |
 | `flow_settings(options)` | Ayar panelini okur veya değiştirir |
 | `flow_model(name)` | Modelleri listeler veya seçer |
