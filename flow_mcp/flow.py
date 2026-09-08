@@ -89,7 +89,16 @@ async def get_media(cdp, media_id):
         "state": "done" if url else "pending",
         "url": url,
         "prompt": _first_prompt(data),
+        "created": _created(data),
     }
+
+
+def _created(data):
+    """Creation time of a media record, epoch seconds."""
+    try:
+        return data[5][0][0]
+    except (TypeError, IndexError):
+        return None
 
 
 def _unescape(text):
@@ -177,6 +186,10 @@ async def start_generation(cdp, prompt, timeout=60):
     import asyncio
 
     await cdp.send("Network.enable")
+    # Reference images travel in the generate request too, and they are
+    # real media, so ids are also filtered by creation time to keep the
+    # ingredients out of the result.
+    since = await cdp.evaluate("Math.floor(Date.now()/1000)") - 5
     bodies = []
     pending = {}
 
@@ -211,7 +224,8 @@ async def start_generation(cdp, prompt, timeout=60):
         tried = set()
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(3)
-            found = await _resolve_media_ids(cdp, "\n".join(bodies), skip=tried)
+            found = await _resolve_media_ids(cdp, "\n".join(bodies),
+                                             skip=tried, since=since)
             if found:
                 return found
             tried |= set(_uuids("\n".join(bodies)))
@@ -232,7 +246,7 @@ def _uuids(text):
     return out
 
 
-async def _resolve_media_ids(cdp, raw, skip=()):
+async def _resolve_media_ids(cdp, raw, skip=(), since=None):
     """Which uuids in the captured traffic the media service recognises.
 
     A generate reply also carries operation, project and scene ids, and
@@ -244,8 +258,12 @@ async def _resolve_media_ids(cdp, raw, skip=()):
         if u in skip:
             continue
         info = await get_media(cdp, u)
-        if info["state"] != "not_found":
-            found.append(u)
+        if info["state"] == "not_found":
+            continue
+        created = info.get("created")
+        if since is not None and created is not None and created < since:
+            continue    # pre-existing asset, e.g. an ingredient
+        found.append(u)
     return found
 
 
