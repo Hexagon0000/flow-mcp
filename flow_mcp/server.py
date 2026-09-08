@@ -1,0 +1,266 @@
+"""MCP server exposing Google Flow to local agents.
+
+Attaches to a Chrome you launched yourself with --remote-debugging-port,
+so your normal Google session (and your AI Pro quota) is used as-is.
+"""
+import asyncio
+import asyncio
+import base64
+import json
+import mimetypes
+import os
+import pathlib
+import urllib.request
+
+from mcp.server.mcpserver import MCPServer
+
+from . import flow, guides
+from .cdp import open_page
+
+PORT = int(os.environ.get("FLOW_CDP_PORT", "9222"))
+DOWNLOAD_DIR = pathlib.Path(
+    os.environ.get("FLOW_DOWNLOAD_DIR", pathlib.Path.home() / "Downloads" / "flow")
+)
+
+mcp = MCPServer("flow")
+
+
+async def _media_in_page(cdp):
+    """Media ids currently rendered in the gallery."""
+    js = (r"JSON.stringify([...new Set((document.body.innerHTML.match("
+          r"/flow-content\.google\/(?:video|image)\/[0-9a-f-]{36}/g)||[]))]"
+          r".map(s=>s.split('/').pop()))")
+    return json.loads(await cdp.evaluate(js))
+
+
+class _Page:
+    """Opens a short-lived CDP session per call.
+
+    Cheaper than holding a socket open for hours against a browser the
+    user may close and reopen at will.
+    """
+
+    async def __aenter__(self):
+        session, self.target = await open_page(PORT)
+        self.session = session
+        self.cdp = await session.__aenter__()
+        await self.cdp.send("Runtime.enable")
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.session.__aexit__(*exc)
+
+    @property
+    def project_id(self):
+        return flow.project_id_from_url(self.target["url"])
+
+
+@mcp.tool()
+async def flow_project() -> dict:
+    """Which Flow project the attached browser tab currently has open."""
+    async with _Page() as p:
+        if not p.project_id:
+            return {"error": "Acik sekme bir Flow projesi degil",
+                    "url": p.target["url"]}
+        return await flow.project_info(p.cdp, p.project_id)
+
+
+@mcp.tool()
+async def flow_generate(prompt: str) -> dict:
+    """Start a generation in the open Flow project.
+
+    Produces a video or an image depending on the mode set with
+    flow_settings, and honours the model, frames and ingredients
+    currently selected. Returns immediately with media ids; poll
+    flow_status for the result rather than blocking, since a video
+    takes minutes.
+    """
+    async with _Page() as p:
+        if not p.project_id:
+            return {"error": "Once tarayicida bir Flow projesi ac"}
+        try:
+            ids = await flow.start_generation(p.cdp, prompt)
+        except RuntimeError as e:
+            return {"error": str(e)}
+        return {"project_id": p.project_id, "media_ids": ids,
+                "state": "pending",
+                "hint": "flow_status ile durumu sorgula"}
+
+
+@mcp.tool()
+async def flow_settings(options: list[str] | None = None) -> dict:
+    """Read or change the generation settings panel.
+
+    Call with no arguments to see what is selected and what is on offer.
+    Pass labels exactly as they appear, e.g. ["Video", "9:16", "720p",
+    "8s", "x2"]. Put "Video" or "Image" first: switching mode replaces
+    the rest of the panel.
+    """
+    async with _Page() as p:
+        if not options:
+            return await flow.read_settings(p.cdp)
+        return await flow.apply_settings(p.cdp, options)
+
+
+@mcp.tool()
+async def flow_model(name: str = "") -> dict:
+    """List the models on offer, or switch to one by name.
+
+    The list depends on the current Image/Video mode, so set that with
+    flow_settings first.
+    """
+    async with _Page() as p:
+        if not name:
+            return await flow.list_models(p.cdp)
+        return await flow.set_model(p.cdp, name)
+
+
+@mcp.tool()
+async def flow_frame(slot: str = "Start", asset: str = "") -> dict:
+    """Set the Start or End frame of a video from an existing asset.
+
+    Needs Frames mode: flow_settings(["Video", "Frames"]). Call without
+    an asset to list what the picker offers; `asset` matches on the
+    caption shown there.
+    """
+    if slot not in ("Start", "End"):
+        return {"error": "slot 'Start' ya da 'End' olmali"}
+    async with _Page() as p:
+        if not asset:
+            return {"slot": slot, "assets": await flow.list_frame_assets(p.cdp, slot)}
+        return await flow.set_frame(p.cdp, slot, asset)
+
+
+@mcp.tool()
+async def flow_upload(file_path: str) -> dict:
+    """Upload a local image into the open Flow project.
+
+    Once uploaded it can be used as a frame or an ingredient.
+    """
+    src = pathlib.Path(file_path).expanduser()
+    if not src.is_file():
+        return {"error": f"Dosya yok: {src}"}
+    data = base64.b64encode(src.read_bytes()).decode()
+    mime = mimetypes.guess_type(src.name)[0] or "image/jpeg"
+
+    async with _Page() as p:
+        before = set(await _media_in_page(p.cdp))
+        r = await p.cdp.evaluate(
+            flow.JS_DROP % (json.dumps(data), json.dumps(src.name),
+                            json.dumps(mime)), timeout=120)
+        if not r.get("ok"):
+            return {"error": "Yukleme tetiklenemedi"}
+        for _ in range(20):
+            await asyncio.sleep(2)
+            new = set(await _media_in_page(p.cdp)) - before
+            if new:
+                return {"uploaded": src.name, "bytes": r["bytes"],
+                        "media_ids": sorted(new)}
+    return {"error": "Yukleme gorunmedi", "uploaded": src.name}
+
+
+@mcp.tool()
+async def flow_download_quality(media_id: str, quality: str = "1080p",
+                                confirm_paid: bool = False) -> dict:
+    """Download a clip at a chosen quality, including upscaled renders.
+
+    Flow's own menu offers "270p" (animated GIF), "720p" (the original),
+    "1080p" and "4K" (both upscaled). 270p/720p/1080p cost nothing; 4K
+    spends credits, so it needs confirm_paid=True. Upscales render on
+    demand and can take minutes.
+    """
+    if "4k" in quality.lower() and not confirm_paid:
+        return {"error": "4K upscale kredi harciyor. Gercekten istiyorsan "
+                         "confirm_paid=True ver.",
+                "ucretsiz": ["270p", "720p", "1080p"]}
+    async with _Page() as p:
+        try:
+            return await flow.download_quality(
+                p.cdp, media_id, quality, DOWNLOAD_DIR)
+        except RuntimeError as e:
+            return {"error": str(e)}
+
+
+@mcp.tool()
+async def flow_ingredient(assets: list[str] | None = None,
+                          clear: bool = False) -> dict:
+    """Attach reference images to the prompt as ingredients.
+
+    Needs Ingredients mode: flow_settings(["Video", "Ingredients"]).
+    With no arguments it reports what is attached and what the picker
+    still offers; `assets` match on the captions shown there and several
+    can be attached at once; `clear=True` detaches everything first.
+    """
+    async with _Page() as p:
+        try:
+            if clear:
+                cleared = await flow.clear_ingredients(p.cdp)
+                if not assets:
+                    return cleared
+            if not assets:
+                return {"attached": len(await flow.attached_ingredients(p.cdp)),
+                        "available": await flow.list_ingredients(p.cdp)}
+            res = await flow.add_ingredients(p.cdp, assets)
+            res["attached"] = len(await flow.attached_ingredients(p.cdp))
+            return res
+        except RuntimeError as e:
+            attached = await flow.attached_ingredients(p.cdp)
+            return {"error": str(e), "attached": len(attached),
+                    "ipucu": "Zaten ekli olanlar seciciden dusuyor; "
+                             "clear=True ile hepsini kaldirabilirsin."}
+
+
+@mcp.tool()
+async def flow_prompt_guide(model: str = "", section: str = "") -> dict:
+    """Google's own prompting guide for a Flow model.
+
+    Reference material to write a better prompt with — nothing here is
+    applied automatically, so read what is useful and put it in your own
+    prompt to flow_generate. Call with no arguments to see which guides
+    exist and their sections; with a model to get its formula and section
+    list; with a section to read that section.
+
+    Each answer carries the source url and the date it was retrieved:
+    check that against the model list from flow_model, and ignore advice
+    that no longer matches what Flow offers.
+    """
+    if not model:
+        return guides.index()
+    return guides.get(model, section)
+
+
+@mcp.tool()
+async def flow_status(media_id: str) -> dict:
+    """Check whether a clip has finished rendering; returns its URLs when done."""
+    async with _Page() as p:
+        return await flow.get_media(p.cdp, media_id)
+
+
+@mcp.tool()
+async def flow_download(media_id: str, filename: str = "") -> dict:
+    """Download a finished video or image to the local download directory."""
+    async with _Page() as p:
+        media = await flow.get_media(p.cdp, media_id)
+    if media["state"] != "done":
+        return {"error": "Medya hazir degil", "state": media["state"]}
+
+    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # The CDN url is pre-signed, so a plain fetch works without cookies.
+    with urllib.request.urlopen(media["url"], timeout=120) as resp:
+        # Flow serves images as JPEG despite the /image/ path, so take the
+        # extension from what the server actually sends.
+        ext = mimetypes.guess_extension(
+            resp.headers.get_content_type()) or (
+                ".mp4" if media["kind"] == "video" else ".jpg")
+        dest = DOWNLOAD_DIR / (filename or f"{media_id}{ext}")
+        dest.write_bytes(resp.read())
+    return {"path": str(dest), "kind": media["kind"],
+            "bytes": dest.stat().st_size, "prompt": media["prompt"]}
+
+
+def main():
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

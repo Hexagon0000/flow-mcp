@@ -1,0 +1,17 @@
+[project]
+name = "flow-mcp"
+version = "0.1.0"
+description = "MCP server driving Google Flow through an attached Chrome"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.0", "websockets>=15"]
+
+[project.scripts]
+flow-mcp = "flow_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# recon/ is a developer tool, not part of the distribution.
+[tool.setuptools]
+packages = ["flow_mcp"]
