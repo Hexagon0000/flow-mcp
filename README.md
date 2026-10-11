@@ -1,32 +1,32 @@
 # flow-mcp
 
-Google Flow'u yerel ajanlara (Claude Code, Cursor, Codex) MCP üzerinden açar.
+Exposes Google Flow to local agents (Claude Code, Cursor, Codex) over MCP.
 
-Kendi açtığın bir Chrome'a bağlanır; Google oturumun ve **AI Pro kotan** olduğu
-gibi kullanılır. API anahtarı ve ek ücret yok.
+It attaches to a Chrome you started yourself, so your own Google session and
+**AI Pro quota** are used as-is. No API key, no extra cost.
 
-## Nasıl çalışıyor
+## How it works
 
-Flow, arayüzün altında Google'ın `batchexecute` RPC protokolünü kullanıyor.
-Sunucu ikiye ayrılmış durumda:
+Under the UI, Flow talks to Google's `batchexecute` RPC protocol. The server
+splits the work in two:
 
-| İş | Yöntem | Neden |
+| Task | Method | Why |
 |---|---|---|
-| Durum sorgulama, medya URL'leri | Doğrudan RPC (`as29s`) | Captcha gerektirmiyor, DOM değişse de çalışır |
-| Üretim başlatma | Gerçek arayüzü sürerek | İstek bir reCAPTCHA Enterprise token'ı taşıyor; onu ancak Flow'un kendi JS'i üretebilir |
-| Ayar paneli | Arayüzü sürerek | Ayarlar istekle birlikte gidiyor, ayrı bir RPC'si yok |
+| Status polling, media URLs | Direct RPC (`as29s`) | No captcha required; keeps working when the DOM changes |
+| Starting a generation | Driving the real UI | The request carries a reCAPTCHA Enterprise token that only Flow's own JS can mint |
+| Settings panel | Driving the UI | Settings travel with the request; there is no separate RPC for them |
 
-Flow her üretim yolu için ayrı bir RPC kullanıyor (düz video, görsel,
-başlangıç/bitiş karesi …) ve media id'nin yanıttaki yeri de yola göre
-değişiyor. Bu yüzden hiçbir RPC kimliği ya da indeks ezberlenmiyor:
-tıklamadan sonraki tüm `batchexecute` yanıtlarındaki UUID'ler toplanıp
-medya servisine soruluyor, gerçekten var olanlar media id kabul ediliyor.
-Flow yeni bir üretim yolu eklerse bu kendiliğinden çalışmaya devam eder.
+Flow uses a different RPC for each generation path (plain video, image,
+start/end frames …), and where the media id sits in the response also
+depends on the path. So no RPC id or index is hard-coded: after the click,
+every UUID in every `batchexecute` response is collected and checked
+against the media service, and the ones that actually exist are taken as
+media ids. If Flow adds a new generation path, this keeps working on its own.
 
-Playwright kullanılmıyor — Chrome'a ham CDP ile bağlanılıyor, bağımlılık
-sadece `mcp` + `websockets`.
+No Playwright — Chrome is driven over raw CDP, and the only dependencies
+are `mcp` + `websockets`.
 
-## Kurulum
+## Installation
 
 ```bash
 git clone https://github.com/Hexagon0000/flow-mcp.git
@@ -34,88 +34,90 @@ cd flow-mcp
 python3 -m venv .venv && ./.venv/bin/pip install -e .
 ```
 
-## Kullanım
+## Usage
 
-1. Chrome'u debug modunda başlat:
+1. Start Chrome in debug mode:
 
    ```bash
    ./scripts/start-chrome.sh
    ```
 
-   İlk açılışta profil boştur — Google hesabına **elle** giriş yap. Oturum
-   `~/.flow-mcp-profile` içinde kalıcı olur. LaunchAgent `flow.google.com`
-   ana sayfasını açar; açık bir proje yoksa sunucu **kendisi yeni proje
-   oluşturur**.
+   The profile is empty on first launch — sign in to your Google account
+   **manually**. The session persists in `~/.flow-mcp-profile`. Chrome
+   opens the `flow.google.com` home page; if no project is open, the server
+   **creates a new project by itself**.
 
-2. Ajanını bağla (aşağıya bak).
+2. Connect your agent (see below).
 
-### Oturum açılışında otomatik başlatma
+### Start automatically at login
 
-Her seferinde komut çalıştırmamak için:
+To avoid running the command every time:
 
 ```bash
 ./scripts/install-launchd.sh
 ```
 
-Bir LaunchAgent kurar; Chrome oturum açılışında debug portuyla ve Flow
-açık şekilde başlar. Loglar `~/Library/Logs/flow-mcp/` altındadır.
+This installs a LaunchAgent; Chrome starts at login with the debug port
+open and Flow loaded. Logs live in `~/Library/Logs/flow-mcp/`.
 
-`KeepAlive` bilerek kapalı: bu Chrome'u kapattığında bilerek kapatmışsındır,
-launchd onu geri getirmemeli. Her koşulda ayakta kalmasını istersen plist'e
-`KeepAlive` ekle.
+`KeepAlive` is deliberately off: if you quit this Chrome, you meant to, and
+launchd should not drag it back. Add `KeepAlive` to the plist if you want it
+running no matter what.
 
-Kaldırmak için:
+To uninstall:
 
 ```bash
 launchctl bootout gui/$UID/com.flow-mcp.chrome && rm ~/Library/LaunchAgents/com.flow-mcp.chrome.plist
 ```
 
-## Ajanlar bunu nasıl kullanır
+## How agents use it
 
-Sunucu, MCP protokolünün `instructions` alanıyla kendini tanıtır: bağlanan
-her istemci (Claude Code, Cursor, Codex) iş akışını ve kredi uyarısını
-otomatik görür. Ana sayfadaysa yeni proje kendiliğinden açılır.
+The server introduces itself through the MCP protocol's `instructions`
+field: every connecting client (Claude Code, Cursor, Codex) sees the
+workflow and the credit warning automatically. If the tab is on the home
+page, a new project is opened on its own.
 
-Çoğu istek için tek araç yeter:
+One tool covers most requests:
 
 ```
-flow_create("mor bir dağ silüeti", kind="image")
-flow_create("sisli orman", kind="video", duration="8s", aspect="9:16")
+flow_create("a purple mountain silhouette", kind="image")
+flow_create("misty forest", kind="video", duration="8s", aspect="9:16")
 ```
 
-Claude Code skill dosyası repoda `skills/flow/SKILL.md`:
+A Claude Code skill file ships in the repo at `skills/flow/SKILL.md`:
 
 ```bash
 mkdir -p ~/.claude/skills/flow
 cp skills/flow/SKILL.md ~/.claude/skills/flow/SKILL.md
 ```
 
-## Araçlar
+## Tools
 
-| Araç | Açıklama |
+| Tool | Description |
 |---|---|
-| **`flow_create(prompt, kind)`** | **Tek çağrıda: ayarla, üret, bekle, indir** |
-| `flow_project` | Açık projenin kimliği ve adı; yoksa yeni proje açar |
-| `flow_settings(options)` | Ayar panelini okur veya değiştirir |
-| `flow_model(name)` | Modelleri listeler veya seçer |
-| `flow_frame(slot, asset)` | Start/End karesini projedeki bir varlıktan atar |
-| `flow_upload(file_path)` | Yerel görseli projeye yükler |
-| `flow_ingredient(assets, clear)` | Referans görselleri prompt'a ekler |
-| `flow_download_quality(media_id, quality)` | 270p GIF / 720p / 1080p / 4K indirir |
-| `flow_prompt_guide(model, section)` | Google'ın o model için prompt rehberi |
-| `flow_generate(prompt)` | Üretimi başlatır, **beklemez**, media id döndürür |
-| `flow_status(media_id)` | `pending` / `done` / `not_found`, tür (`video`/`image`) ve hazırsa URL |
-| `flow_download(media_id, filename)` | Biten videoyu/görseli diske indirir |
+| **`flow_create(prompt, kind)`** | **One call: configure, generate, wait, download** |
+| `flow_project` | Id and name of the open project; opens a new one if there is none |
+| `flow_settings(options)` | Reads or changes the settings panel |
+| `flow_model(name)` | Lists or selects models |
+| `flow_frame(slot, asset)` | Sets the Start/End frame from an asset in the project |
+| `flow_upload(file_path)` | Uploads a local image to the project |
+| `flow_ingredient(assets, clear)` | Adds reference images to the prompt |
+| `flow_download_quality(media_id, quality)` | Downloads 270p GIF / 720p / 1080p / 4K |
+| `flow_prompt_guide(model, section)` | Google's prompt guide for that model |
+| `flow_generate(prompt)` | Starts a generation, **does not wait**, returns the media id |
+| `flow_status(media_id)` | `pending` / `done` / `not_found`, type (`video`/`image`) and URL when ready |
+| `flow_download(media_id, filename)` | Saves a finished video/image to disk |
 
-Video da görsel de aynı araçlarla üretilir; hangisinin üretileceğini
-`flow_settings` ile seçtiğin mod belirler.
+Videos and images are generated with the same tools; the mode you pick
+with `flow_settings` decides which one you get.
 
-Üretim dakikalar sürdüğü için `flow_generate` bilinçli olarak asenkron.
-Ajan üretimi başlatır, işine devam eder, sonra `flow_status` ile yoklar.
+Generation takes minutes, so `flow_generate` is intentionally asynchronous.
+The agent starts a generation, carries on with its work, then polls with
+`flow_status`.
 
-## Ajan yapılandırması
+## Agent configuration
 
-**Claude Code** — `~/.claude.json` içindeki `mcpServers`, ya da:
+**Claude Code** — `mcpServers` in `~/.claude.json`, or:
 
 ```bash
 claude mcp add flow -- /ABS/PATH/flow-mcp/.venv/bin/python -m flow_mcp.server
@@ -142,154 +144,155 @@ command = "/ABS/PATH/flow-mcp/.venv/bin/python"
 args = ["-m", "flow_mcp.server"]
 ```
 
-## Prompt rehberleri
+## Prompt guides
 
-`guides/` altında Google'ın kendi rehberlerinden çıkarılmış üç dosya var:
-Veo 3.1, Nano Banana ve Gemini Omni. Her dosyanın başında kaynak URL ve
-çekilme tarihi durur.
+`guides/` holds three files distilled from Google's own guides: Veo 3.1,
+Nano Banana and Gemini Omni. Each file starts with its source URL and
+retrieval date.
 
 ```
-flow_prompt_guide()                              # hangi rehberler var
-flow_prompt_guide("Veo 3.1 - Fast")              # formül + bölüm listesi
-flow_prompt_guide("Veo 3.1 - Fast", "Audio")     # tek bölüm
+flow_prompt_guide()                              # which guides exist
+flow_prompt_guide("Veo 3.1 - Fast")              # formula + section list
+flow_prompt_guide("Veo 3.1 - Fast", "Audio")     # a single section
 ```
 
-Model adı Flow'un panelde gösterdiği etiketle eşleşir, ayrıca gevşek
-eşleştirme yapar.
+The model name matches the label Flow shows in its panel, with loose
+matching on top.
 
-**Tasarım kararı:** rehber prompt'a otomatik uygulanmaz. Ajan sessizce
-yeniden yazılmış bir prompt gönderirse kullanıcı ne gittiğini göremez ve
-sapan çıktının nedenini bulamaz. Bunun yerine rehber ajana *gösterilir*,
-prompt'u ajan yazar. Araç isteğe bağlıdır; ajan tutarsız bulursa
-kullanmaz.
+**Design decision:** the guide is not applied to the prompt automatically.
+If the agent silently sent a rewritten prompt, the user could not see what
+was sent or figure out why the output drifted. Instead the guide is
+*shown* to the agent, and the agent writes the prompt. The tool is
+optional; an agent that finds it inconsistent can skip it.
 
-Maliyet: bölüm başına ~110 token, model özeti ~270. Rehberlerin tamamı
-~2300 token olurdu — bu yüzden bölüm bölüm servis ediliyor.
+Cost: ~110 tokens per section, ~270 for a model summary. The full guides
+would be ~2300 tokens — which is why they are served section by section.
 
-Rehberler bayatlayabilir. Yanıttaki `retrieved` tarihini `flow_model()`
-çıktısıyla karşılaştır; rehberde olmayan bir model varsa ona güvenme.
+Guides can go stale. Compare the `retrieved` date in the response with the
+output of `flow_model()`; if a model is missing from the guide, don't
+trust it.
 
-## Ayarlar
+## Configuration
 
-| Değişken | Varsayılan |
+| Variable | Default |
 |---|---|
 | `FLOW_CDP_PORT` | `9222` |
 | `FLOW_CHROME_PROFILE` | `~/.flow-mcp-profile` |
 | `FLOW_DOWNLOAD_DIR` | `~/Downloads/flow` |
 
-### Üretim ayarları
+### Generation settings
 
-`flow_settings()` argümansız çağrılırsa o an seçili olanları ve tüm
-seçenekleri döndürür. Değiştirmek için etiketleri aynen ver:
+Called without arguments, `flow_settings()` returns the current selection
+and all available options. To change them, pass the labels exactly:
 
 ```
 flow_settings(["Video", "9:16", "720p", "8s", "x2"])
 flow_settings(["Image", "1:1", "x4"])
 ```
 
-`Video` / `Image` her zaman ilk sırada olmalı — mod değişince panelin
-geri kalanı komple değişiyor.
+`Video` / `Image` must always come first — switching mode replaces the
+rest of the panel entirely.
 
-| Ayar | Seçenekler |
+| Setting | Options |
 |---|---|
-| Mod | `Image`, `Video` |
-| En-boy (video) | `16:9`, `9:16` |
-| En-boy (görsel) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16` |
-| Çözünürlük | `360p`, `720p` (sadece video) |
-| Süre | `4s`, `6s`, `8s`, `10s` (sadece video) |
-| Çıktı sayısı | `x1` … `x4` |
+| Mode | `Image`, `Video` |
+| Aspect ratio (video) | `16:9`, `9:16` |
+| Aspect ratio (image) | `16:9`, `4:3`, `1:1`, `3:4`, `9:16` |
+| Resolution | `360p`, `720p` (video only) |
+| Duration | `4s`, `6s`, `8s`, `10s` (video only) |
+| Output count | `x1` … `x4` |
 
 ### Model
 
 ```
-flow_model()                      # o modda seçilebilecekler
+flow_model()                      # models available in the current mode
 flow_model("Veo 3.1 - Quality")
 ```
 
-Liste moda göre değişir: video tarafında `Omni 1.1 Flash`,
-`Veo 3.1 - Lite / Fast / Quality`; görsel tarafında `Nano Banana Pro`,
+The list depends on the mode: on the video side `Omni 1.1 Flash`,
+`Veo 3.1 - Lite / Fast / Quality`; on the image side `Nano Banana Pro`,
 `Nano Banana 2`, `Nano Banana 2 Lite`.
 
-### Başlangıç / bitiş karesi
+### Start / end frames
 
 ```
 flow_settings(["Video", "Frames"])
-flow_frame("Start")                       # seçilebilecek varlıkları listeler
-flow_frame("Start", "Yeşil bir üçgen")
+flow_frame("Start")                       # lists the assets you can pick
+flow_frame("Start", "Green triangle")
 flow_frame("End", "Orange fox")
-flow_generate("üçgen tilkiye dönüşüyor")
+flow_generate("the triangle turns into a fox")
 ```
 
-Frames modunda Flow çözünürlük ve süre seçeneklerini gizliyor — bunlar o
-modda ayarlanamaz.
+In Frames mode Flow hides the resolution and duration options — they
+cannot be set in that mode.
 
-### Ingredients (referans görseller)
+### Ingredients (reference images)
 
 ```
 flow_settings(["Video", "Ingredients"])
-flow_ingredient()                                  # ekli olanlar + seçenekler
-flow_ingredient(["üçgen", "Orange fox"])           # ekle
-flow_ingredient(clear=True)                        # hepsini kaldır
+flow_ingredient()                                  # attached ones + options
+flow_ingredient(["triangle", "Orange fox"])        # add
+flow_ingredient(clear=True)                        # remove all
 ```
 
-Frames'ten farkı: Frames iki uç kareyi belirler, Ingredients ise
-prompt'a taşınan referans görsellerdir ve sayıca sınırsızdır.
-Ingredients modunda çözünürlük ve süre seçenekleri korunur (Frames'te
-kaybolur).
+The difference from Frames: Frames pin the two end frames, while
+Ingredients are reference images carried into the prompt, with no limit on
+how many. Ingredients mode keeps the resolution and duration options
+(Frames loses them).
 
-Seçici tek seferde tek varlık tutuyor, bu yüzden araç her birini ayrı
-turda ekliyor. Zaten ekli olan bir varlık seçici listesinden düşer —
-tekrar eklemek istersen önce `clear=True`.
+The picker holds one asset at a time, so the tool adds each one in a
+separate round. An asset that is already attached drops out of the picker
+list — to add it again, call `clear=True` first.
 
-### Görsel yükleme
+### Uploading images
 
 ```
-flow_upload("~/Desktop/karakter.png")
+flow_upload("~/Desktop/character.png")
 ```
 
-Flow'un kendi `Upload` menüsü File System Access API'sini kullanıyor ve
-hiçbir CDP alanı onu yakalayamıyor; yanıtlanamayacak bir sistem penceresi
-açılırdı. Bu yüzden dosya sayfaya bırakılarak (drag-drop) aynı yükleme
-yoluna sokuluyor. Yüklenen görsel `flow_frame` ile kare olarak
-kullanılabilir.
+Flow's own `Upload` menu uses the File System Access API, which no CDP
+domain can intercept; it would open a system dialog nobody can answer. So
+the file is dropped onto the page (drag-and-drop) to reach the same upload
+path. The uploaded image can then be used as a frame with `flow_frame`.
 
-### Kaliteli / upscale indirme
+### High-quality / upscaled downloads
 
 ```
 flow_download_quality(media_id, "1080p")
 ```
 
-| Seçenek | Not |
+| Option | Note |
 |---|---|
-| `270p` | Animasyonlu GIF |
-| `720p` | Orijinal |
-| `1080p` | Upscale, **ücretsiz** |
-| `4K` | Upscale, **kredi harcar** — `confirm_paid=True` ister |
+| `270p` | Animated GIF |
+| `720p` | Original |
+| `1080p` | Upscale, **free** |
+| `4K` | Upscale, **costs credits** — requires `confirm_paid=True` |
 
-Upscale anında render edildiği için dakikalar sürebilir. Bu indirme
-imzalı URL üzerinden değil, tarayıcının kendi indirmesi yakalanarak
-yapılır — upscale çıktısının CDN adresi yok.
+Upscales are rendered on demand and can take minutes. This download does
+not go through a signed URL; it captures the browser's own download
+instead — upscaled output has no CDN address.
 
-Görsel üretimi Nano Banana Pro ile 0 kredi, video kredi harcıyor —
-üretmeden önce panelde yazan kredi maliyetine bak.
+Image generation with Nano Banana Pro costs 0 credits; video costs credits —
+check the credit cost shown in the panel before generating.
 
-## Arayüz değişirse
+## If the UI changes
 
-Üretim yolu DOM'a bağlı olduğu için Flow arayüzü değişince kırılabilir.
-`recon/sniff.py` ağ trafiğini yeniden yakalar:
+Since the generation path depends on the DOM, it can break when Flow's UI
+changes. `recon/sniff.py` captures the network traffic again:
 
 ```bash
 ./.venv/bin/python recon/sniff.py 120
 ```
 
-Script çalışırken elle bir üretim yap; `recon/capture.json` içinden yeni
-RPC kimliklerini `flow_mcp/flow.py` başındaki sabitlere yaz.
+Run a generation by hand while the script is running, then copy the new
+RPC ids from `recon/capture.json` into the constants at the top of
+`flow_mcp/flow.py`.
 
-## Uyarı
+## Disclaimer
 
-Otomasyon, Google'ın hizmet şartları açısından gri alanda. Kişisel kullanım
-içindir; hesap riski sıfır değildir.
+Automation is a grey area under Google's terms of service. This is meant
+for personal use; the risk to your account is not zero.
 
-## Lisans
+## License
 
 [MIT](LICENSE)
