@@ -141,6 +141,71 @@ def project_id_from_url(url):
     return m.group(1) if m else None
 
 
+JS_NEW_PROJECT = r"""
+(() => {
+  const label = el => (
+    (el.getAttribute('aria-label') || '') + ' ' +
+    (el.innerText || el.textContent || '')
+  ).replace(/\s+/g, ' ').trim();
+  const visible = el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const els = [...document.querySelectorAll(
+    'button, a, [role=button], [role=link]')].filter(visible);
+  const hit = els.find(el =>
+    /new\s*project|yeni\s*proje|create\s*(a\s*)?project|create\s*new/i
+      .test(label(el)));
+  if (!hit) {
+    const nearby = els.map(label).filter(t => t && t.length < 80).slice(0, 24);
+    return {ok:false, err:"Yeni proje butonu bulunamadi", nearby};
+  }
+  hit.click();
+  return {ok:true, label: label(hit)};
+})()
+"""
+
+
+async def page_url(cdp):
+    return await cdp.evaluate("location.href")
+
+
+async def ensure_project(cdp, timeout=45):
+    """If the tab is Flow home, open a new project and wait for /project/.
+
+    Returns {project_id, created, url}. `created` is False when a project
+    was already open. Raises if the home page has no New-project control
+    (usually because the user is not signed in).
+    """
+    import asyncio
+    url = await page_url(cdp)
+    pid = project_id_from_url(url)
+    if pid:
+        return {"project_id": pid, "created": False, "url": url}
+
+    clicked = await cdp.evaluate(JS_NEW_PROJECT)
+    if not clicked.get("ok"):
+        nearby = clicked.get("nearby") or []
+        hint = (" Yakin etiketler: " + ", ".join(nearby)) if nearby else ""
+        raise RuntimeError(
+            (clicked.get("err") or "Yeni proje acilamadi") +
+            ". flow.google.com acik ve Google hesabina giris yapilmis olmali."
+            + hint
+        )
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.4)
+        url = await page_url(cdp)
+        pid = project_id_from_url(url)
+        if pid:
+            return {"project_id": pid, "created": True, "url": url,
+                    "clicked": clicked.get("label")}
+    return {"project_id": None, "created": True, "url": url,
+            "clicked": clicked.get("label"),
+            "pending_other_tab": True}
+
+
 # --- generation: drive the real UI so Flow mints its own captcha token ---
 
 JS_SET_PROMPT = """

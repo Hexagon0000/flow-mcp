@@ -4,7 +4,6 @@ Attaches to a Chrome you launched yourself with --remote-debugging-port,
 so your normal Google session (and your AI Pro quota) is used as-is.
 """
 import asyncio
-import asyncio
 import base64
 import json
 import mimetypes
@@ -35,9 +34,10 @@ flow_generate -> flow_status -> flow_download.
 
 Bilinmesi gerekenler:
 
-- Uretim, tarayicida ACIK OLAN Flow projesine yapilir. flow_project ile
-  hangi projede oldugunu dogrula. Sekme Flow'da degilse hicbir sey
-  calismaz; kullanicidan projeyi acmasini iste.
+- Uretim bir Flow projesine yapilir. Sekme ana sayfadaysa sunucu kendisi
+  yeni proje acar; flow_project ile dogrulayabilirsin. Chrome kapaliysa
+  veya Google oturumu yoksa kullanicidan debug Chrome'u acip giris
+  yapmasini iste.
 - Gorsel uretimi (Nano Banana) kredi harcamaz, video harcar. Kullanici
   aksini soylemedikce en ucuz ayari sec: kisa sure, x1, dusuk cozunurluk.
   4K upscale kredi harcar ve ayrica onay ister.
@@ -69,28 +69,65 @@ class _Page:
     """
 
     async def __aenter__(self):
+        await self._connect()
+        return self
+
+    async def _connect(self):
         session, self.target = await open_page(PORT)
         self.session = session
         self.cdp = await session.__aenter__()
         await self.cdp.send("Runtime.enable")
-        return self
+        self.url = self.target["url"]
 
     async def __aexit__(self, *exc):
         await self.session.__aexit__(*exc)
 
     @property
     def project_id(self):
-        return flow.project_id_from_url(self.target["url"])
+        return flow.project_id_from_url(self.url)
+
+    async def require_project(self):
+        """Open a new Flow project when the attached tab is the home page."""
+        info = await flow.ensure_project(self.cdp)
+        if info.get("project_id"):
+            self.url = info["url"]
+            return info
+        # New-project sometimes opens a second tab; reconnect to it.
+        await self.session.__aexit__(None, None, None)
+        deadline = asyncio.get_running_loop().time() + 20
+        last_err = "Yeni proje sekmesi gorunmedi"
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                await self._connect()
+            except RuntimeError as e:
+                last_err = str(e)
+                continue
+            if self.project_id:
+                info["project_id"] = self.project_id
+                info["url"] = self.url
+                info["switched"] = True
+                return info
+        raise RuntimeError(
+            last_err + ". Yeni proje tiklandi ama /project/ URL'sine "
+            "gecilemedi; Google hesabina giris yapilmis mi?"
+        )
 
 
 @mcp.tool()
 async def flow_project() -> dict:
-    """Which Flow project the attached browser tab currently has open."""
+    """Which Flow project the attached browser tab currently has open.
+
+    If the tab is still on the Flow home page, a new project is created.
+    """
     async with _Page() as p:
-        if not p.project_id:
-            return {"error": "Acik sekme bir Flow projesi degil",
-                    "url": p.target["url"]}
-        return await flow.project_info(p.cdp, p.project_id)
+        try:
+            opened = await p.require_project()
+        except RuntimeError as e:
+            return {"error": str(e), "url": getattr(p, "url", "")}
+        info = await flow.project_info(p.cdp, p.project_id)
+        info["created"] = bool(opened.get("created"))
+        return info
 
 
 @mcp.tool()
@@ -104,9 +141,8 @@ async def flow_generate(prompt: str) -> dict:
     takes minutes.
     """
     async with _Page() as p:
-        if not p.project_id:
-            return {"error": "Once tarayicida bir Flow projesi ac"}
         try:
+            await p.require_project()
             ids = await flow.start_generation(p.cdp, prompt)
         except RuntimeError as e:
             return {"error": str(e)}
@@ -146,9 +182,8 @@ async def flow_create(prompt: str, kind: str = "image", model: str = "",
 
     steps = {}
     async with _Page() as p:
-        if not p.project_id:
-            return {"error": "Tarayicida acik bir Flow projesi yok"}
         try:
+            await p.require_project()
             steps["settings"] = await flow.apply_settings(p.cdp, wanted)
             if model:
                 steps["model"] = await flow.set_model(p.cdp, model)
@@ -196,6 +231,10 @@ async def flow_settings(options: list[str] | None = None) -> dict:
     the rest of the panel.
     """
     async with _Page() as p:
+        try:
+            await p.require_project()
+        except RuntimeError as e:
+            return {"error": str(e)}
         if not options:
             return await flow.read_settings(p.cdp)
         return await flow.apply_settings(p.cdp, options)
@@ -209,6 +248,10 @@ async def flow_model(name: str = "") -> dict:
     flow_settings first.
     """
     async with _Page() as p:
+        try:
+            await p.require_project()
+        except RuntimeError as e:
+            return {"error": str(e)}
         if not name:
             return await flow.list_models(p.cdp)
         return await flow.set_model(p.cdp, name)
@@ -225,6 +268,10 @@ async def flow_frame(slot: str = "Start", asset: str = "") -> dict:
     if slot not in ("Start", "End"):
         return {"error": "slot 'Start' ya da 'End' olmali"}
     async with _Page() as p:
+        try:
+            await p.require_project()
+        except RuntimeError as e:
+            return {"error": str(e)}
         if not asset:
             return {"slot": slot, "assets": await flow.list_frame_assets(p.cdp, slot)}
         return await flow.set_frame(p.cdp, slot, asset)
@@ -243,6 +290,10 @@ async def flow_upload(file_path: str) -> dict:
     mime = mimetypes.guess_type(src.name)[0] or "image/jpeg"
 
     async with _Page() as p:
+        try:
+            await p.require_project()
+        except RuntimeError as e:
+            return {"error": str(e)}
         before = set(await _media_in_page(p.cdp))
         r = await p.cdp.evaluate(
             flow.JS_DROP % (json.dumps(data), json.dumps(src.name),
@@ -274,6 +325,7 @@ async def flow_download_quality(media_id: str, quality: str = "1080p",
                 "ucretsiz": ["270p", "720p", "1080p"]}
     async with _Page() as p:
         try:
+            await p.require_project()
             return await flow.download_quality(
                 p.cdp, media_id, quality, DOWNLOAD_DIR)
         except RuntimeError as e:
@@ -292,6 +344,7 @@ async def flow_ingredient(assets: list[str] | None = None,
     """
     async with _Page() as p:
         try:
+            await p.require_project()
             if clear:
                 cleared = await flow.clear_ingredients(p.cdp)
                 if not assets:

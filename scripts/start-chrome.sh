@@ -12,7 +12,10 @@ if curl -s --max-time 2 "http://localhost:$PORT/json/version" >/dev/null 2>&1; t
 fi
 
 echo "Chrome aciliyor (profil: $PROFILE)"
-echo "Ilk acilista Google hesabina elle giris yap, sonra flow.google.com'da bir proje ac."
+echo "Ilk acilista Google hesabina elle giris yap. Proje yoksa MCP sunucusu kendisi acar."
 exec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port="$PORT" \
-  --user-data-dir="$PROFILE"
+  --user-data-dir="$PROFILE" \
+  --no-first-run \
+  --no-default-browser-check \
+  "https://flow.google.com"

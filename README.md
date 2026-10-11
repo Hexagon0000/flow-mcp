@@ -29,7 +29,8 @@ sadece `mcp` + `websockets`.
 ## Kurulum
 
 ```bash
-cd ~/Projects/flow-mcp
+git clone https://github.com/Hexagon0000/flow-mcp.git
+cd flow-mcp
 python3 -m venv .venv && ./.venv/bin/pip install -e .
 ```
 
@@ -42,13 +43,11 @@ python3 -m venv .venv && ./.venv/bin/pip install -e .
    ```
 
    İlk açılışta profil boştur — Google hesabına **elle** giriş yap. Oturum
-   `~/.flow-mcp-profile` içinde kalıcı olur.
+   `~/.flow-mcp-profile` içinde kalıcı olur. LaunchAgent `flow.google.com`
+   ana sayfasını açar; açık bir proje yoksa sunucu **kendisi yeni proje
+   oluşturur**.
 
-2. `flow.google.com` üzerinde bir proje aç. Sunucu o an açık olan projeye
-   üretim yapar. Ana sayfa sekmesi de açıksa sorun değil; sunucu proje
-   sekmesini tercih eder.
-
-3. Ajanını bağla (aşağıya bak).
+2. Ajanını bağla (aşağıya bak).
 
 ### Oturum açılışında otomatik başlatma
 
@@ -74,9 +73,8 @@ launchctl bootout gui/$UID/com.flow-mcp.chrome && rm ~/Library/LaunchAgents/com.
 ## Ajanlar bunu nasıl kullanır
 
 Sunucu, MCP protokolünün `instructions` alanıyla kendini tanıtır: bağlanan
-her istemci (Claude Code, Cursor, Codex) iş akışını, kredi uyarısını ve
-"üretim açık olan projeye yapılır" kuralını otomatik görür. Ayrıca ajan
-tarafında yapılandırma gerekmez.
+her istemci (Claude Code, Cursor, Codex) iş akışını ve kredi uyarısını
+otomatik görür. Ana sayfadaysa yeni proje kendiliğinden açılır.
 
 Çoğu istek için tek araç yeter:
 
@@ -85,16 +83,19 @@ flow_create("mor bir dağ silüeti", kind="image")
 flow_create("sisli orman", kind="video", duration="8s", aspect="9:16")
 ```
 
-Claude Code için ayrıca `~/.claude/skills/flow/` altında bir skill var;
-o, tarayıcı kurulumunu (debug portlu Chrome, Flow'da açık proje)
-sorun çıktığında adım adım çözer.
+Claude Code skill dosyası repoda `skills/flow/SKILL.md`:
+
+```bash
+mkdir -p ~/.claude/skills/flow
+cp skills/flow/SKILL.md ~/.claude/skills/flow/SKILL.md
+```
 
 ## Araçlar
 
 | Araç | Açıklama |
 |---|---|
 | **`flow_create(prompt, kind)`** | **Tek çağrıda: ayarla, üret, bekle, indir** |
-| `flow_project` | Açık sekmedeki projenin kimliği ve adı |
+| `flow_project` | Açık projenin kimliği ve adı; yoksa yeni proje açar |
 | `flow_settings(options)` | Ayar panelini okur veya değiştirir |
 | `flow_model(name)` | Modelleri listeler veya seçer |
 | `flow_frame(slot, asset)` | Start/End karesini projedeki bir varlıktan atar |
@@ -117,7 +118,7 @@ Ajan üretimi başlatır, işine devam eder, sonra `flow_status` ile yoklar.
 **Claude Code** — `~/.claude.json` içindeki `mcpServers`, ya da:
 
 ```bash
-claude mcp add flow -- ~/Projects/flow-mcp/.venv/bin/python -m flow_mcp.server
+claude mcp add flow -- /ABS/PATH/flow-mcp/.venv/bin/python -m flow_mcp.server
 ```
 
 **Cursor** — `~/.cursor/mcp.json`:
@@ -126,7 +127,7 @@ claude mcp add flow -- ~/Projects/flow-mcp/.venv/bin/python -m flow_mcp.server
 {
   "mcpServers": {
     "flow": {
-      "command": "/Users/KULLANICI/Projects/flow-mcp/.venv/bin/python",
+      "command": "/ABS/PATH/flow-mcp/.venv/bin/python",
       "args": ["-m", "flow_mcp.server"]
     }
   }
@@ -137,7 +138,7 @@ claude mcp add flow -- ~/Projects/flow-mcp/.venv/bin/python -m flow_mcp.server
 
 ```toml
 [mcp_servers.flow]
-command = "/Users/KULLANICI/Projects/flow-mcp/.venv/bin/python"
+command = "/ABS/PATH/flow-mcp/.venv/bin/python"
 args = ["-m", "flow_mcp.server"]
 ```
 
@@ -288,3 +289,7 @@ RPC kimliklerini `flow_mcp/flow.py` başındaki sabitlere yaz.
 
 Otomasyon, Google'ın hizmet şartları açısından gri alanda. Kişisel kullanım
 içindir; hesap riski sıfır değildir.
+
+## Lisans
+
+[MIT](LICENSE)
